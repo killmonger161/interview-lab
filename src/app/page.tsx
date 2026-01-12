@@ -27,7 +27,7 @@ export default function InterviewLab() {
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
 
-  // KEEP-ALIVE
+  // --- RENDER KEEP-ALIVE ---
   useEffect(() => {
     const keepAlive = setInterval(() => {
       fetch('/').catch(() => {});
@@ -36,10 +36,12 @@ export default function InterviewLab() {
   }, []);
 
   const startInterview = async () => {
+    // Warm up mic for mobile permissions
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop()); 
+      stream.getTracks().forEach(t => t.stop());
     } catch (e) { console.error("Mic warm-up failed"); }
+
     setTotalSeconds(setup.min * 60);
     setIsStarted(true);
     getAiResponse("START");
@@ -86,7 +88,6 @@ export default function InterviewLab() {
   const startRecording = async () => {
     if (recording || isPaused) return;
 
-    // RESUME AUDIO CONTEXT
     const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
     if (AudioCtx) {
       const ctx = new AudioCtx();
@@ -99,7 +100,6 @@ export default function InterviewLab() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // LIVE TRANSCRIPT (SPEECH RECOGNITION)
       const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRec) {
         recognitionRef.current = new SpeechRec();
@@ -114,30 +114,25 @@ export default function InterviewLab() {
         recognitionRef.current.start();
       }
 
-      // MEDIA RECORDER (FOR SERVER)
-      // We check for supported types because Safari/Chrome Mobile differ
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType });
+      // NEGOTIATE MIMETYPE FOR MOBILE VOICE DATA
+      const types = ['audio/webm', 'audio/mp4', 'audio/wav'];
+      const supportedType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
       
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: supportedType });
       mediaRecorderRef.current.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
       
       mediaRecorderRef.current.onstop = async () => {
-        const blob = new Blob(audioChunksRef.current, { type: mimeType });
-        
-        // Final fallback: if transcript exists, use it. If not, send the audio.
+        const blob = new Blob(audioChunksRef.current, { type: supportedType });
         const fd = new FormData(); 
         fd.append('audio', blob);
-        fd.append('transcript_fallback', transcript); // Send the text we caught live
+        fd.append('transcript_fallback', transcript);
         
         setLoading(true);
         const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
         const data = await res.json();
-        
-        // Use server transcription first, but if it fails, use the phone's live transcript
-        const finalContent = data.transcript || transcript || "Silent Response";
-        getAiResponse(finalContent);
+        getAiResponse(data.transcript || transcript || "Silent Response");
         stream.getTracks().forEach(t => t.stop());
       };
 
@@ -146,7 +141,7 @@ export default function InterviewLab() {
       if (questionSeconds <= 0) setQuestionSeconds(45);
 
     } catch (e) { 
-      alert("Mic Error. Check HTTPS and Permissions."); 
+      alert("Mic access failed. Please ensure you are on HTTPS."); 
     }
   };
 
@@ -208,10 +203,9 @@ export default function InterviewLab() {
       <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
         {aiReply.split('\n').filter(s => s.includes(':') && !s.includes('SCORE') && !s.includes('VERDICT')).map((line, i) => {
             const [label, content] = line.split(':');
-            const isBehavioral = label.trim() === 'BEHAVIORAL';
             return (
-              <div key={i} style={{ padding: '25px', borderRadius: '20px', border: isBehavioral ? '2px solid #0070f3' : '1px solid #eee', background: isBehavioral ? '#f0f7ff' : '#fff' }}>
-                <strong style={{ color: '#0070f3', textTransform: 'uppercase', fontSize: '0.75rem', display: 'block', marginBottom: '5px' }}>{label} {isBehavioral && "(AI VISION ACTIVE)"}</strong>
+              <div key={i} style={{ padding: '25px', borderRadius: '20px', border: '1px solid #eee', background: '#fff' }}>
+                <strong style={{ color: '#0070f3', textTransform: 'uppercase', fontSize: '0.75rem', display: 'block', marginBottom: '5px' }}>{label}</strong>
                 <span style={{ fontSize: '1.1rem', lineHeight: '1.5' }}>{content}</span>
               </div>
             );
@@ -264,6 +258,10 @@ export default function InterviewLab() {
               </div>
             )}
             <button onClick={startInterview} style={{ width:'100%', padding:20, background:'#000', color:'#fff', borderRadius:12, marginTop:20, fontWeight:900, cursor: 'pointer' }}>START MEETING</button>
+            
+            <p style={{ fontSize: '0.7rem', opacity: 0.5, marginTop: '20px', textAlign: 'center' }}>
+              🔒 Privacy: Voice data is processed in real-time and never stored on our servers.
+            </p>
           </div>
         </div>
       ) : (
