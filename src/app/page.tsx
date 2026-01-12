@@ -82,7 +82,7 @@ export default function InterviewLab() {
   const startRecording = async () => {
     if (recording || isPaused) return;
 
-    // BRAVE/WEBKIT WAKE-UP
+    // 1. WAKE UP AUDIO CONTEXT (Essential for mobile browsers)
     const AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
     if (AudioContext) {
       const audioCtx = new AudioContext();
@@ -91,12 +91,14 @@ export default function InterviewLab() {
 
     setTranscript('');
     audioChunksRef.current = [];
+    
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       
-      if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition();
+      // 2. INITIALIZE SPEECH RECOGNITION (Transcript)
+      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRec) {
+        recognitionRef.current = new SpeechRec();
         recognitionRef.current.lang = 'en-US';
         recognitionRef.current.continuous = true;
         recognitionRef.current.interimResults = true;
@@ -108,21 +110,27 @@ export default function InterviewLab() {
         recognitionRef.current.start();
       }
 
-      mediaRecorderRef.current = new MediaRecorder(stream);
-      mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
-      mediaRecorderRef.current.onstop = async () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const fd = new FormData(); fd.append('audio', blob);
-        setLoading(true);
-        const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
-        const data = await res.json();
-        getAiResponse(data.transcript || transcript || "Silent Response");
-        stream.getTracks().forEach(t => t.stop());
-      };
-      mediaRecorderRef.current.start();
-      setRecording(true);
-      if (questionSeconds <= 0) setQuestionSeconds(45);
-    } catch (e) { alert("Mic Error: Check Brave Shields"); }
+      // 3. STAGGERED START FOR MEDIA RECORDER (Wait 100ms for mobile hardware)
+      setTimeout(() => {
+        mediaRecorderRef.current = new MediaRecorder(stream);
+        mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
+        mediaRecorderRef.current.onstop = async () => {
+          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          const fd = new FormData(); fd.append('audio', blob);
+          setLoading(true);
+          const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+          const data = await res.json();
+          getAiResponse(data.transcript || transcript || "Silent Response");
+          stream.getTracks().forEach(t => t.stop());
+        };
+        mediaRecorderRef.current.start();
+        setRecording(true);
+        if (questionSeconds <= 0) setQuestionSeconds(45);
+      }, 100);
+
+    } catch (e) { 
+      alert("Microphone Access Failed. Check your phone's Master Mic Toggle in Settings."); 
+    }
   };
 
   const stopRecording = () => {
@@ -134,12 +142,8 @@ export default function InterviewLab() {
   };
 
   const getAiResponse = async (userText: string, final = false) => {
-    // AGGRESSIVE STOP SPEAKING
     window.speechSynthesis.cancel();
-    
-    if (final) {
-      stopRecording();
-    }
+    if (final) stopRecording();
     setLoading(true);
     const fd = new FormData();
     fd.append('history', [...chatHistory, `User: ${userText}`].join('\n'));
