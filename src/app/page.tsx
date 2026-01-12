@@ -27,24 +27,19 @@ export default function InterviewLab() {
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
 
-  // --- RENDER KEEP-ALIVE SYSTEM ---
+  // KEEP-ALIVE
   useEffect(() => {
-    // This pings the site every 13 minutes to prevent Render from sleeping
     const keepAlive = setInterval(() => {
-      fetch('/').catch(e => console.log("Keep-alive ping"));
+      fetch('/').catch(() => {});
     }, 13 * 60 * 1000); 
     return () => clearInterval(keepAlive);
   }, []);
 
   const startInterview = async () => {
-    // WARM UP MICROPHONE IMMEDIATELY ON BUTTON CLICK
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop()); // Stop it immediately, we just needed the permission "warm-up"
-    } catch (e) {
-      console.error("Mic warm-up failed");
-    }
-
+      stream.getTracks().forEach(t => t.stop()); 
+    } catch (e) { console.error("Mic warm-up failed"); }
     setTotalSeconds(setup.min * 60);
     setIsStarted(true);
     getAiResponse("START");
@@ -91,7 +86,7 @@ export default function InterviewLab() {
   const startRecording = async () => {
     if (recording || isPaused) return;
 
-    // FORCING AUDIO CONTEXT RESUME FOR MOBILE
+    // RESUME AUDIO CONTEXT
     const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
     if (AudioCtx) {
       const ctx = new AudioCtx();
@@ -104,7 +99,7 @@ export default function InterviewLab() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // Use a lower bitrate/sample rate for mobile stability
+      // LIVE TRANSCRIPT (SPEECH RECOGNITION)
       const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRec) {
         recognitionRef.current = new SpeechRec();
@@ -119,18 +114,30 @@ export default function InterviewLab() {
         recognitionRef.current.start();
       }
 
-      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      // MEDIA RECORDER (FOR SERVER)
+      // We check for supported types because Safari/Chrome Mobile differ
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType });
+      
       mediaRecorderRef.current.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
       
       mediaRecorderRef.current.onstop = async () => {
-        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const fd = new FormData(); fd.append('audio', blob);
+        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+        
+        // Final fallback: if transcript exists, use it. If not, send the audio.
+        const fd = new FormData(); 
+        fd.append('audio', blob);
+        fd.append('transcript_fallback', transcript); // Send the text we caught live
+        
         setLoading(true);
         const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
         const data = await res.json();
-        getAiResponse(data.transcript || transcript || "Silent Response");
+        
+        // Use server transcription first, but if it fails, use the phone's live transcript
+        const finalContent = data.transcript || transcript || "Silent Response";
+        getAiResponse(finalContent);
         stream.getTracks().forEach(t => t.stop());
       };
 
@@ -139,7 +146,7 @@ export default function InterviewLab() {
       if (questionSeconds <= 0) setQuestionSeconds(45);
 
     } catch (e) { 
-      alert("Mic unavailable. Ensure you are using HTTPS and have granted permissions."); 
+      alert("Mic Error. Check HTTPS and Permissions."); 
     }
   };
 
