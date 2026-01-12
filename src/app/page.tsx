@@ -81,13 +81,23 @@ export default function InterviewLab() {
 
   const startRecording = async () => {
     if (recording || isPaused) return;
+
+    // BRAVE/WEBKIT WAKE-UP
+    const AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (AudioContext) {
+      const audioCtx = new AudioContext();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+    }
+
     setTranscript('');
     audioChunksRef.current = [];
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      
       if (SpeechRecognition) {
         recognitionRef.current = new SpeechRecognition();
+        recognitionRef.current.lang = 'en-US';
         recognitionRef.current.continuous = true;
         recognitionRef.current.interimResults = true;
         recognitionRef.current.onresult = (e: any) => {
@@ -97,6 +107,7 @@ export default function InterviewLab() {
         };
         recognitionRef.current.start();
       }
+
       mediaRecorderRef.current = new MediaRecorder(stream);
       mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
       mediaRecorderRef.current.onstop = async () => {
@@ -111,7 +122,7 @@ export default function InterviewLab() {
       mediaRecorderRef.current.start();
       setRecording(true);
       if (questionSeconds <= 0) setQuestionSeconds(45);
-    } catch (e) { alert("Mic Error"); }
+    } catch (e) { alert("Mic Error: Check Brave Shields"); }
   };
 
   const stopRecording = () => {
@@ -123,8 +134,10 @@ export default function InterviewLab() {
   };
 
   const getAiResponse = async (userText: string, final = false) => {
+    // AGGRESSIVE STOP SPEAKING
+    window.speechSynthesis.cancel();
+    
     if (final) {
-      window.speechSynthesis.cancel();
       stopRecording();
     }
     setLoading(true);
@@ -138,7 +151,11 @@ export default function InterviewLab() {
     
     const res = await fetch('/api/chat', { method: 'POST', body: fd });
     const { reply } = await res.json();
-    if (final) { setAiReply(reply); setIsFinished(true); }
+    if (final) { 
+      setAiReply(reply); 
+      setIsFinished(true); 
+      window.speechSynthesis.cancel(); 
+    }
     else {
       const clean = reply.replace(/\[T:\d+\]/g, '');
       const t = reply.match(/\[T:(\d+)\]/);
@@ -179,7 +196,7 @@ export default function InterviewLab() {
             );
         })}
       </div>
-      <button onClick={() => window.location.reload()} style={{ marginTop: '40px', padding: '15px 50px', borderRadius: '50px', background: '#000', color: '#fff', fontWeight: 900, cursor: 'pointer' }}>NEW ATTEMPT</button>
+      <button onClick={() => { window.speechSynthesis.cancel(); window.location.reload(); }} style={{ marginTop: '40px', padding: '15px 50px', borderRadius: '50px', background: '#000', color: '#fff', fontWeight: 900, cursor: 'pointer' }}>NEW ATTEMPT</button>
     </main>
   );
 
@@ -196,7 +213,6 @@ export default function InterviewLab() {
              )}
           </div>
           <div style={{ flex: '1 1 300px', maxWidth: 380, paddingTop: 20 }}>
-            {/* TYPED TIMER SELECT */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <label style={{ fontSize: '0.75rem', fontWeight: 900 }}>SESSION DURATION (MIN)</label>
                 <input type="number" value={setup.min} onChange={e => setSetup({...setup, min: parseInt(e.target.value) || 0})} style={{ width: 50, border: '1px solid #ddd', borderRadius: 5, textAlign: 'center', fontWeight: 700 }} />
@@ -245,32 +261,17 @@ export default function InterviewLab() {
                 ))}
               </p>
 
-              {/* BUTTONS MOVED UP DIRECTLY UNDER TEXT */}
               <div style={{ background: '#000', padding: '10px 30px', borderRadius: 100, display: 'flex', gap: 20, alignItems: 'center', marginBottom: 20 }}>
-                <button onClick={recording ? stopRecording : startRecording} disabled={isAiSpeaking || loading} style={{ background: recording ? '#ff3b30' : '#fff', color: recording ? '#fff' : '#000', border: 'none', padding: '10px 25px', borderRadius: 50, fontWeight: 900, cursor: 'pointer', fontSize: '0.85rem' }}>{recording ? 'FINISH' : 'RESPONSE'}</button>
+                <button onClick={recording ? stopRecording : startRecording} disabled={loading} style={{ background: recording ? '#ff3b30' : '#fff', color: recording ? '#fff' : '#000', border: 'none', padding: '10px 25px', borderRadius: 50, fontWeight: 900, cursor: 'pointer', fontSize: '0.85rem' }}>{recording ? 'FINISH' : 'RESPONSE'}</button>
                 <button onClick={() => setIsPaused(!isPaused)} style={{ background: '#222', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: 50, cursor: 'pointer', fontSize: '0.85rem' }}>{isPaused ? 'RESUME' : 'PAUSE'}</button>
-                <button onClick={() => getAiResponse("AUDIT", true)} style={{ background: 'none', border: 'none', color: '#ff3b30', fontWeight: 900, cursor: 'pointer', fontSize: '0.85rem' }}>LEAVE</button>
+                <button onClick={() => { window.speechSynthesis.cancel(); getAiResponse("AUDIT", true); }} style={{ background: 'none', border: 'none', color: '#ff3b30', fontWeight: 900, cursor: 'pointer', fontSize: '0.85rem' }}>LEAVE</button>
               </div>
 
               {recording && <p style={{ fontSize: '1.2rem', color: '#0070f3', fontWeight: 600, margin: 0 }}>{transcript || "I'm listening..."}</p>}
             </div>
 
             {setup.camMode !== 'off' && (
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                muted 
-                style={{ 
-                  width: '100%', 
-                  maxWidth: 450, 
-                  height: 'auto', 
-                  aspectRatio: '4/5', 
-                  borderRadius: 40, 
-                  background: '#000', 
-                  objectFit: 'cover', 
-                  transform: 'scaleX(-1)' 
-                }} 
-              />
+              <video ref={videoRef} autoPlay muted style={{ width: '100%', maxWidth: 450, height: 'auto', aspectRatio: '4/5', borderRadius: 40, background: '#000', objectFit: 'cover', transform: 'scaleX(-1)' }} />
             )}
           </div>
         </div>
