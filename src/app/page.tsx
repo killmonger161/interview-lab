@@ -27,15 +27,24 @@ export default function InterviewLab() {
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
 
+  // --- RENDER KEEP-ALIVE SYSTEM ---
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' && !isStarted && (setup.data || setup.file)) startInterview();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [isStarted, setup]);
+    // This pings the site every 13 minutes to prevent Render from sleeping
+    const keepAlive = setInterval(() => {
+      fetch('/').catch(e => console.log("Keep-alive ping"));
+    }, 13 * 60 * 1000); 
+    return () => clearInterval(keepAlive);
+  }, []);
 
-  const startInterview = () => {
+  const startInterview = async () => {
+    // WARM UP MICROPHONE IMMEDIATELY ON BUTTON CLICK
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop()); // Stop it immediately, we just needed the permission "warm-up"
+    } catch (e) {
+      console.error("Mic warm-up failed");
+    }
+
     setTotalSeconds(setup.min * 60);
     setIsStarted(true);
     getAiResponse("START");
@@ -82,11 +91,11 @@ export default function InterviewLab() {
   const startRecording = async () => {
     if (recording || isPaused) return;
 
-    // 1. WAKE UP AUDIO CONTEXT (Essential for mobile browsers)
-    const AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
-    if (AudioContext) {
-      const audioCtx = new AudioContext();
-      if (audioCtx.state === 'suspended') await audioCtx.resume();
+    // FORCING AUDIO CONTEXT RESUME FOR MOBILE
+    const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
+    if (AudioCtx) {
+      const ctx = new AudioCtx();
+      if (ctx.state === 'suspended') await ctx.resume();
     }
 
     setTranscript('');
@@ -95,7 +104,7 @@ export default function InterviewLab() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // 2. INITIALIZE SPEECH RECOGNITION (Transcript)
+      // Use a lower bitrate/sample rate for mobile stability
       const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRec) {
         recognitionRef.current = new SpeechRec();
@@ -110,26 +119,27 @@ export default function InterviewLab() {
         recognitionRef.current.start();
       }
 
-      // 3. STAGGERED START FOR MEDIA RECORDER (Wait 100ms for mobile hardware)
-      setTimeout(() => {
-        mediaRecorderRef.current = new MediaRecorder(stream);
-        mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
-        mediaRecorderRef.current.onstop = async () => {
-          const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-          const fd = new FormData(); fd.append('audio', blob);
-          setLoading(true);
-          const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
-          const data = await res.json();
-          getAiResponse(data.transcript || transcript || "Silent Response");
-          stream.getTracks().forEach(t => t.stop());
-        };
-        mediaRecorderRef.current.start();
-        setRecording(true);
-        if (questionSeconds <= 0) setQuestionSeconds(45);
-      }, 100);
+      mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      
+      mediaRecorderRef.current.onstop = async () => {
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const fd = new FormData(); fd.append('audio', blob);
+        setLoading(true);
+        const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+        const data = await res.json();
+        getAiResponse(data.transcript || transcript || "Silent Response");
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      mediaRecorderRef.current.start();
+      setRecording(true);
+      if (questionSeconds <= 0) setQuestionSeconds(45);
 
     } catch (e) { 
-      alert("Microphone Access Failed. Check your phone's Master Mic Toggle in Settings."); 
+      alert("Mic unavailable. Ensure you are using HTTPS and have granted permissions."); 
     }
   };
 
