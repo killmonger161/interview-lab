@@ -104,45 +104,63 @@ export default function InterviewLab() {
 
   const startRecording = async () => {
     if (recording || isPaused) return;
+    
     const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
     if (AudioCtx) {
       const ctx = new AudioCtx();
       if (ctx.state === 'suspended') await ctx.resume();
     }
+
     setTranscript('');
     audioChunksRef.current = [];
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || (window as any).webkitRecognition;
+      
       if (SpeechRec) {
         recognitionRef.current = new SpeechRec();
         recognitionRef.current.lang = 'en-US';
         recognitionRef.current.continuous = true;
         recognitionRef.current.interimResults = true;
+        
         recognitionRef.current.onresult = (e: any) => {
           let str = "";
-          for (let i = e.resultIndex; i < e.results.length; ++i) str += e.results[i][0].transcript;
+          for (let i = e.resultIndex; i < e.results.length; ++i) {
+            str += e.results[i][0].transcript;
+          }
           setTranscript(str);
         };
         recognitionRef.current.start();
       }
-      const types = ['audio/mp4', 'audio/webm', 'audio/wav'];
+
+      const types = ['audio/mp4', 'audio/webm', 'audio/wav', 'audio/aac'];
       const supportedType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: supportedType });
+      
       mediaRecorderRef.current.ondataavailable = (e) => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
       };
+
       mediaRecorderRef.current.onstop = async () => {
         setLoading(true);
         const blob = new Blob(audioChunksRef.current, { type: supportedType });
         const fd = new FormData(); 
         fd.append('audio', blob);
-        fd.append('transcript_fallback', transcript);
+        
+        const currentTranscript = transcript;
+        fd.append('transcript_fallback', currentTranscript);
+        
         const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
         const data = await res.json();
-        getAiResponse(data.transcript || transcript || "Silent Response");
+        
+        const finalText = data.transcript || currentTranscript || "Silent Response";
+        
+        setTranscript(finalText);
+        getAiResponse(finalText);
+        
         stream.getTracks().forEach(t => t.stop());
       };
+
       mediaRecorderRef.current.start();
       setRecording(true);
       if (questionSeconds <= 0) setQuestionSeconds(45);
@@ -171,19 +189,18 @@ export default function InterviewLab() {
     fd.append('customInstruction', setup.customInstruction);
 
     const rawContext = setup.mode === 'text' ? setup.data : (setup.file ? setup.file : "null");
-    const forceGeneral = (!setup.data && !setup.file) ? "Conduct a general personality and logic interview. Avoid business specific topics." : rawContext;
+    const forceGeneral = (!setup.data && !setup.file) ? "Conduct a general personality and logic interview." : rawContext;
     fd.append('context', forceGeneral);
     
     if (final) {
         fd.append('isFinal', 'true');
-        // RELEVANCE AUDIT & TRUTH GUARD INSTRUCTION
-        fd.append('truthGuard', 'Perform a critical relevance audit. For every parameter, check if user answers were relevant to the questions asked. If user provided nonsense, dodged questions, or gave irrelevant replies, explicitly state "IRRELEVANT" or "DODGED" in that section and assign SCORE: 0 and VERDICT: FAILED. No hallucinations of quality. No ADVICE section.');
+        fd.append('truthGuard', 'Perform a brutal relevance audit. If the user provided no substantial answers, stayed silent, or dodged questions, you MUST assign SCORE: 0 and VERDICT: FAILED. Strictly NO pity marks. Every parameter card must state "IRRELEVANT" or "NO DATA" if applicable. Strictly NO ADVICE section.');
     }
     
     const res = await fetch('/api/chat', { method: 'POST', body: fd });
     const { reply } = await res.json();
     if (final) { 
-      setAiReply(reply || ""); 
+      setAiReply(reply || "SCORE: 0\nVERDICT: FAILED"); 
       setIsFinished(true); 
     } else {
       const clean = reply?.replace(/\[T:\d+\]/g, '') || "Error.";
@@ -210,8 +227,10 @@ export default function InterviewLab() {
   if (isFinished) return (
     <main style={{ padding: '60px 20px', maxWidth: '800px', margin: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div style={{ background: '#000', color: '#fff', width: '100%', padding: '60px', borderRadius: '40px', textAlign: 'center', marginBottom: '30px' }}>
-        <h2 style={{ opacity: 0.6, fontSize: '0.8rem', letterSpacing: '2px', textTransform: 'uppercase' }}>Verdict: {aiReply?.match(/VERDICT:\s*(.*)/)?.[1] || "EVALUATED"}</h2>
-        <h1 style={{ fontSize: 'clamp(4rem, 15vw, 10rem)', fontWeight: 900, margin: '10px 0', color: '#ff3b30' }}>{aiReply?.match(/SCORE:\s*(\d+)/)?.[1] || "0"}</h1>
+        <h2 style={{ opacity: 0.6, fontSize: '0.8rem', letterSpacing: '2px', textTransform: 'uppercase' }}>Verdict: {aiReply?.match(/VERDICT:\s*(.*)/)?.[1] || "FAILED"}</h2>
+        <h1 style={{ fontSize: 'clamp(4rem, 15vw, 10rem)', fontWeight: 900, margin: '10px 0', color: (aiReply?.match(/SCORE:\s*(\d+)/)?.[1] === '0') ? '#ff3b30' : '#fff' }}>
+          {aiReply?.match(/SCORE:\s*(\d+)/)?.[1] || "0"}
+        </h1>
         <button onClick={downloadLog} style={{ background: '#fff', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '20px', fontWeight: 700, cursor: 'pointer', marginTop: '10px' }}>DOWNLOAD LOG</button>
       </div>
       <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '15px' }}>
@@ -224,7 +243,7 @@ export default function InterviewLab() {
             return (
               <div key={i} style={{ padding: '25px', borderRadius: '20px', border: '1px solid #eee', background: '#fff' }}>
                 <strong style={{ color: '#0070f3', textTransform: 'uppercase', fontSize: '0.75rem', display: 'block', marginBottom: '5px' }}>{label}</strong>
-                <span style={{ fontSize: '1.1rem', lineHeight: '1.5' }}>{content}</span>
+                <span style={{ fontSize: '1.1rem', lineHeight: '1.5' }}>{content || "NO DATA"}</span>
               </div>
             );
         })}
