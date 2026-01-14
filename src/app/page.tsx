@@ -36,7 +36,6 @@ export default function InterviewLab() {
   }, []);
 
   const startInterview = async () => {
-    // Warm up mic for mobile permissions
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
@@ -103,7 +102,7 @@ export default function InterviewLab() {
       const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRec) {
         recognitionRef.current = new SpeechRec();
-        recognitionRef.current.lang = 'en-US';
+        recognitionRef.current.lang = 'en-US'; // CHANGE 1: FORCED LANGUAGE LOCK
         recognitionRef.current.continuous = true;
         recognitionRef.current.interimResults = true;
         recognitionRef.current.onresult = (e: any) => {
@@ -114,7 +113,6 @@ export default function InterviewLab() {
         recognitionRef.current.start();
       }
 
-      // NEGOTIATE MIMETYPE FOR MOBILE VOICE DATA
       const types = ['audio/webm', 'audio/mp4', 'audio/wav'];
       const supportedType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
       
@@ -157,12 +155,18 @@ export default function InterviewLab() {
     window.speechSynthesis.cancel();
     if (final) stopRecording();
     setLoading(true);
+
+    // CHANGE 2: FILE CONTEXT SAFETY CHECK
+    const contextValue = setup.mode === 'file' 
+      ? (setup.file || "No file uploaded") 
+      : (setup.data || "No context provided");
+
     const fd = new FormData();
     fd.append('history', [...chatHistory, `User: ${userText}`].join('\n'));
     fd.append('difficulty', setup.difficulty);
     fd.append('type', setup.mode);
     fd.append('camMode', setup.camMode);
-    fd.append('context', setup.mode === 'text' ? setup.data : (setup.file ? setup.file : "null"));
+    fd.append('context', contextValue);
     if (final) fd.append('isFinal', 'true');
     
     const res = await fetch('/api/chat', { method: 'POST', body: fd });

@@ -1,44 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Groq from "groq-sdk";
-// @ts-ignore
-import pdf from "pdf-parse-debugging-disabled";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
-    const history = formData.get('history') as string;
-    const type = formData.get('type') as string;
-    const difficulty = formData.get('difficulty') as string; 
-    const isFinal = formData.get('isFinal') === 'true';
-    let context = "";
+    const audioFile = formData.get('audio') as File;
+    const fallbackText = formData.get('transcript_fallback') as string;
 
-    if (type === 'file' && formData.get('context') !== "null") {
-      const file = formData.get('context') as File;
-      const buffer = Buffer.from(await file.arrayBuffer());
-      context = file.type === "application/pdf" ? (await pdf(buffer)).text : buffer.toString('utf8');
-    } else {
-      context = formData.get('context') as string || "";
+    // If no audio was sent, use the fallback text from the phone
+    if (!audioFile || audioFile.size === 0) {
+      return NextResponse.json({ transcript: fallbackText || "" });
     }
 
-    let systemPrompt = isFinal 
-      ? `Provide a FINAL AUDIT. Use this format exactly:
-         SCORE: [number]
-         TECHNICAL: [critique]
-         LINGUISTIC: [critique]
-         PACING: [critique]
-         ADVICE: [summary]`
-      : `You are a Senior Interviewer (Level ${difficulty}). 
-         ${context ? `Topic: ${context}` : "If you don't know the topic, start by professionally asking the candidate what role/topic they want to be interviewed for today."}
-         RULES: Under 2 sentences. No repetition. End with [T:seconds].`;
+    // Convert File to Buffer for Groq
+    const buffer = Buffer.from(await audioFile.arrayBuffer());
+    
+    // We create a temporary file-like object for the Groq SDK
+    const file = await Groq.toFile(buffer, 'audio.m4a', { type: audioFile.type });
 
-    const response = await groq.chat.completions.create({
-      messages: [{ role: "system", content: systemPrompt }, { role: "user", content: history }],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.4,
+    // Send to Groq Whisper for Speech-to-Text
+    const transcription = await groq.audio.transcriptions.create({
+      file: file,
+      model: "whisper-large-v3-turbo", // Fastest and best for mobile
+      response_format: "json",
+      language: "en",
     });
 
-    return NextResponse.json({ reply: response.choices[0].message.content });
-  } catch (e) { return NextResponse.json({ error: "API Error" }, { status: 500 }); }
+    return NextResponse.json({ 
+      transcript: transcription.text || fallbackText 
+    });
+
+  } catch (e) {
+    console.error("Transcription Error:", e);
+    // If transcription fails, we still return the fallback text so the app doesn't break
+    const formData = await req.formData().catch(() => null);
+    const fallback = formData?.get('transcript_fallback') as string;
+    return NextResponse.json({ transcript: fallback || "" });
+  }
 }
