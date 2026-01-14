@@ -27,7 +27,15 @@ export default function InterviewLab() {
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
 
-  // --- RENDER KEEP-ALIVE ---
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis.cancel();
+      if (videoRef.current?.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const keepAlive = setInterval(() => {
       fetch('/').catch(() => {});
@@ -36,10 +44,14 @@ export default function InterviewLab() {
   }, []);
 
   const startInterview = async () => {
+    window.speechSynthesis.cancel();
+    const silent = new SpeechSynthesisUtterance("");
+    window.speechSynthesis.speak(silent);
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       stream.getTracks().forEach(t => t.stop());
-    } catch (e) { console.error("Mic warm-up failed"); }
+    } catch (e) { alert("Mic access denied. Please enable in settings."); }
 
     setTotalSeconds(setup.min * 60);
     setIsStarted(true);
@@ -68,6 +80,7 @@ export default function InterviewLab() {
   const speak = (text: string) => {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'en-US';
     setSpokenIndex(0);
     utterance.onboundary = (e) => {
       if (e.name === 'word') {
@@ -80,12 +93,15 @@ export default function InterviewLab() {
       }
     };
     utterance.onstart = () => setIsAiSpeaking(true);
-    utterance.onend = () => { setIsAiSpeaking(false); setSpokenIndex(text.split(/\s+/).length); };
+    utterance.onend = () => { 
+      setIsAiSpeaking(false); 
+      setSpokenIndex(text.split(/\s+/).length); 
+    };
     window.speechSynthesis.speak(utterance);
   };
 
   const startRecording = async () => {
-    if (recording || isPaused) return;
+    if (recording || isPaused || loading) return;
 
     const AudioCtx = (window as any).AudioContext || (window as any).webkitAudioContext;
     if (AudioCtx) {
@@ -102,7 +118,7 @@ export default function InterviewLab() {
       const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRec) {
         recognitionRef.current = new SpeechRec();
-        recognitionRef.current.lang = 'en-US'; // CHANGE 1: FORCED LANGUAGE LOCK
+        recognitionRef.current.lang = 'en-US';
         recognitionRef.current.continuous = true;
         recognitionRef.current.interimResults = true;
         recognitionRef.current.onresult = (e: any) => {
@@ -113,7 +129,7 @@ export default function InterviewLab() {
         recognitionRef.current.start();
       }
 
-      const types = ['audio/webm', 'audio/mp4', 'audio/wav'];
+      const types = ['audio/webm', 'audio/mp4', 'audio/wav', 'audio/aac'];
       const supportedType = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
       
       mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: supportedType });
@@ -122,25 +138,26 @@ export default function InterviewLab() {
       };
       
       mediaRecorderRef.current.onstop = async () => {
+        setLoading(true);
         const blob = new Blob(audioChunksRef.current, { type: supportedType });
         const fd = new FormData(); 
         fd.append('audio', blob);
         fd.append('transcript_fallback', transcript);
         
-        setLoading(true);
-        const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
-        const data = await res.json();
-        getAiResponse(data.transcript || transcript || "Silent Response");
+        try {
+          const res = await fetch('/api/transcribe', { method: 'POST', body: fd });
+          const data = await res.json();
+          getAiResponse(data.transcript || transcript || "Silent Response");
+        } catch {
+          getAiResponse(transcript || "Connection Error");
+        }
         stream.getTracks().forEach(t => t.stop());
       };
 
       mediaRecorderRef.current.start();
       setRecording(true);
       if (questionSeconds <= 0) setQuestionSeconds(45);
-
-    } catch (e) { 
-      alert("Mic access failed. Please ensure you are on HTTPS."); 
-    }
+    } catch (e) { alert("Mic failed. Ensure you use HTTPS."); }
   };
 
   const stopRecording = () => {
@@ -153,10 +170,8 @@ export default function InterviewLab() {
 
   const getAiResponse = async (userText: string, final = false) => {
     window.speechSynthesis.cancel();
-    if (final) stopRecording();
     setLoading(true);
 
-    // CHANGE 2: FILE CONTEXT SAFETY CHECK
     const contextValue = setup.mode === 'file' 
       ? (setup.file || "No file uploaded") 
       : (setup.data || "No context provided");
@@ -169,22 +184,25 @@ export default function InterviewLab() {
     fd.append('context', contextValue);
     if (final) fd.append('isFinal', 'true');
     
-    const res = await fetch('/api/chat', { method: 'POST', body: fd });
-    const { reply } = await res.json();
-    if (final) { 
-      setAiReply(reply); 
-      setIsFinished(true); 
-      window.speechSynthesis.cancel(); 
+    try {
+      const res = await fetch('/api/chat', { method: 'POST', body: fd });
+      const { reply } = await res.json();
+      if (final) { 
+        setAiReply(reply); 
+        setIsFinished(true); 
+      } else {
+        const clean = reply.replace(/\[T:\d+\]/g, '');
+        const t = reply.match(/\[T:(\d+)\]/);
+        setChatHistory(prev => [...prev, `User: ${userText}`, `AI: ${clean}`]);
+        setAiReply(clean);
+        if (t) setQuestionSeconds(parseInt(t[1]));
+        speak(clean);
+      }
+    } catch {
+      setAiReply("Network error. Try again.");
+    } finally {
+      setLoading(false);
     }
-    else {
-      const clean = reply.replace(/\[T:\d+\]/g, '');
-      const t = reply.match(/\[T:(\d+)\]/);
-      setChatHistory(prev => [...prev, `User: ${userText}`, `AI: ${clean}`]);
-      setAiReply(clean);
-      if (t) setQuestionSeconds(parseInt(t[1]));
-      speak(clean);
-    }
-    setLoading(false);
   };
 
   useEffect(() => {
