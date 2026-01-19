@@ -3,6 +3,25 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+// Analyze transcript quality for response intelligence
+function analyzeTranscriptQuality(text: string): { isIntelligent: boolean; confidence: number; hasFillers: boolean } {
+  const fillerWords = /\b(um|uh|ah|like|you know|actually|basically|i think|i guess|sort of|kind of)\b/gi;
+  const fillerCount = (text.match(fillerWords) || []).length;
+  const wordCount = text.split(/\s+/).length;
+  
+  // Intelligent responses have:
+  // - Substantive length (>20 words)
+  // - Few fillers relative to length
+  // - Specific technical or detailed language
+  const hasSpecificContent = /\b(because|therefore|thus|consequently|for example|specifically|technically|implement|architecture|design|optimize|strategy)\b/i.test(text);
+  const isIntelligent = wordCount > 25 && fillerCount < wordCount / 10 && hasSpecificContent;
+  
+  const confidence = Math.max(0, 1 - (fillerCount * 0.15)); // Penalize for fillers
+  const hasFillers = fillerCount > 2;
+  
+  return { isIntelligent, confidence: Math.min(1, confidence), hasFillers };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
@@ -11,7 +30,11 @@ export async function POST(req: NextRequest) {
 
     // If no audio was sent, use the fallback text from the phone
     if (!audioFile || audioFile.size === 0) {
-      return NextResponse.json({ transcript: fallbackText || "" });
+      const quality = analyzeTranscriptQuality(fallbackText);
+      return NextResponse.json({ 
+        transcript: fallbackText || "",
+        quality: quality
+      });
     }
 
     // Convert File to Buffer for Groq
@@ -28,8 +51,12 @@ export async function POST(req: NextRequest) {
       language: "en",
     });
 
+    const finalTranscript = transcription.text || fallbackText;
+    const quality = analyzeTranscriptQuality(finalTranscript);
+
     return NextResponse.json({ 
-      transcript: transcription.text || fallbackText 
+      transcript: finalTranscript,
+      quality: quality // Send back quality metrics for intelligent follow-ups
     });
 
   } catch (e) {
@@ -37,6 +64,9 @@ export async function POST(req: NextRequest) {
     // If transcription fails, we still return the fallback text so the app doesn't break
     const formData = await req.formData().catch(() => null);
     const fallback = formData?.get('transcript_fallback') as string;
-    return NextResponse.json({ transcript: fallback || "" });
+    return NextResponse.json({ 
+      transcript: fallback || "",
+      quality: { isIntelligent: false, confidence: 0, hasFillers: true }
+    });
   }
 }
